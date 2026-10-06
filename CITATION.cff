@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Auto Caption Generator"
+type: software
+abstract: "Generates .srt subtitle files from audio and video using Groq's hosted Whisper API, with support for English, Hindi, Urdu, Kannada, Malayalam and Hinglish. Works on local files and Google Drive."
+authors:
+  - family-names: "Khalander"
+    given-names: "Amaan Mohammed"
+repository-code: "https://github.com/Amaan9136/ai-subtitle-generator"
+license: MIT
+keywords:
+  - subtitles
+  - captions
+  - srt
+  - whisper
+  - groq
+  - speech-to-text
+  - hinglish
+  - transcription

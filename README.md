@@ -1,6 +1,23 @@
 # Auto Caption Generator
 
+[![CI](https://github.com/Amaan9136/ai-subtitle-generator/actions/workflows/ci.yml/badge.svg)](https://github.com/Amaan9136/ai-subtitle-generator/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 Generates `.srt` subtitle files from audio and video using Groq's hosted Whisper API. No model downloads, no GPU needed. It handles single files, whole folders, and Google Drive files or folders, and can write captions in English, Hindi, Urdu, Kannada, Malayalam or Hinglish.
+
+## Quick start
+
+```bash
+git clone https://github.com/Amaan9136/ai-subtitle-generator.git
+cd ai-subtitle-generator
+pip install -r requirements.txt
+cp .env.example .env
+python auto_caption_generator.py
+```
+
+On Windows PowerShell use `Copy-Item .env.example .env` instead of `cp`. Put your Groq key in `.env` before running, and make sure FFmpeg is installed. The full setup is below.
 
 ## Features
 
@@ -14,7 +31,7 @@ Generates `.srt` subtitle files from audio and video using Groq's hosted Whisper
 ## Requirements
 
 - Python 3.9+
-- FFmpeg and FFprobe installed (the script expects `C:\ffmpeg\bin\ffmpeg.exe` and `C:\ffmpeg\bin\ffprobe.exe`, change `FFMPEG` and `FFPROBE` at the top of `auto_caption_generator.py` if yours are elsewhere)
+- FFmpeg and FFprobe installed, either on your `PATH` or set with `FFMPEG_PATH` and `FFPROBE_PATH` in `.env` (see [FFmpeg setup](#ffmpeg-setup))
 - A free Groq API key: https://console.groq.com/keys
 - Google Drive credentials, only if you use Drive links (see below)
 
@@ -38,11 +55,33 @@ pip install requests-toolbelt
 GROQ_API_KEY=your_groq_api_key_here
 GROQ_MODEL=whisper-large-v3
 GROQ_LLM_MODEL=openai/gpt-oss-120b
+FFMPEG_PATH=
+FFPROBE_PATH=
 SOURCE_LANG=auto
 TARGET_LANG=hing
 ```
 
-`.env` is in `.gitignore`, so your key is not committed.
+`.env` is in `.gitignore`, so your key is not committed. Never share your `.env` file or paste its contents in an issue.
+
+### FFmpeg setup
+
+The script uses `FFMPEG_PATH` and `FFPROBE_PATH` from `.env` when they are set. When they are empty it looks for `ffmpeg` and `ffprobe` on your `PATH`.
+
+Install FFmpeg from https://ffmpeg.org/download.html and check that both commands work:
+
+```bash
+ffmpeg -version
+ffprobe -version
+```
+
+If both print a version, you need no extra setup. If FFmpeg is installed somewhere that is not on your `PATH`, put the full paths in `.env`:
+
+```env
+FFMPEG_PATH=C:/ffmpeg/bin/ffmpeg.exe
+FFPROBE_PATH=C:/ffmpeg/bin/ffprobe.exe
+```
+
+On Windows use forward slashes and no quotes. Double quotes turn `\f` and `\b` in a path into control characters and break it.
 
 ### Google Drive setup (only for Drive links)
 
@@ -73,7 +112,7 @@ Press Enter on the first two to use the defaults from `.env`. For the path you c
 | Input | Example |
 |---|---|
 | Local audio or video file | `D:\Recordings\AUD-20200303-WA0034.amr` |
-| Local folder (every audio/video file directly inside it) | `D:\0 AMAAN MAIN\` |
+| Local folder (every audio/video file directly inside it) | `D:\Recordings\` |
 | Google Drive file link | `https://drive.google.com/file/d/1AbCdEfGhIjKlMnOpQrSt/view` |
 | Google Drive folder link | `https://drive.google.com/drive/folders/1XyZ...` |
 | Bare Drive file or folder ID | `1AbCdEfGhIjKlMnOpQrSt` |
@@ -162,28 +201,30 @@ Set in `.env`:
 |---|---|---|
 | `GROQ_API_KEY` | none | Your Groq key (required) |
 | `GROQ_MODEL` | `whisper-large-v3` | Speech model. `whisper-large-v3-turbo` is faster but slightly less accurate |
-| `GROQ_LLM_MODEL` | `openai/gpt-oss-120b` | Text model used for translation and Hinglish. If it is not available on your account the script picks `qwen/qwen3.8-27b` automatically |
+| `GROQ_LLM_MODEL` | `openai/gpt-oss-120b` | Text model used for translation and Hinglish. If it is not available on your account the script falls back to `qwen/qwen3.6-27b` (a Groq preview model) and then `openai/gpt-oss-20b` |
 | `SOURCE_LANG` | `auto` | Default for the audio language prompt |
 | `TARGET_LANG` | `hing` | Default for the caption language prompt |
+| `CUSTOM_PROMPT` | empty | Default hint about the audio, e.g. mixed languages or names |
+| `FFMPEG_PATH` | empty | Full path to `ffmpeg`. When empty, `ffmpeg` is looked up on your `PATH` |
+| `FFPROBE_PATH` | empty | Full path to `ffprobe`. When empty, `ffprobe` is looked up on your `PATH` |
 
 Set at the top of the script:
 
 | Constant | Default | Meaning |
 |---|---|---|
-| `FFMPEG`, `FFPROBE` | `C:\ffmpeg\bin\...` | Paths to FFmpeg and FFprobe |
 | `AUDIO_CHUNK_SECONDS` | `600` | Length of each upload chunk |
 | `AUDIO_BITRATE_FOR_STT` | `64k` | Bitrate of the uploaded audio |
 | `LLM_BATCH_SIZE` | `25` | Caption lines converted per request |
 
 ## Troubleshooting
 
-- **FFmpeg/FFprobe were not found:** fix `FFMPEG` and `FFPROBE` at the top of the script.
+- **FFmpeg/FFprobe were not found:** install FFmpeg and add it to your `PATH`, or set `FFMPEG_PATH` and `FFPROBE_PATH` in `.env` (see [FFmpeg setup](#ffmpeg-setup)).
 - **GROQ_API_KEY is not set:** check that `.env` is next to the script and contains your key.
 - **Groq API error or rate limit:** the free tier has request limits. The error is printed and that file is skipped. Wait a bit and run again. Files that finished are skipped on the rerun.
 - **No speech detected:** no `.srt` is written for that file.
 - **Could not read video duration:** FFprobe could not read the file. Check that it plays.
 - **A file keeps being skipped:** a `<name>-<src>-translate-<lang>.srt` or `<name>-<src>-transcribe-<lang>.srt` for that language exists in the folder or in `output_captions/`. Delete it to redo the file.
-- **Model not found (404):** Groq retired `openai/gpt-oss-120b` on 2026-08-16. Remove the old `GROQ_LLM_MODEL` line from `.env` or set it to `openai/gpt-oss-120b`.
+- **Model not found (404):** the model in `GROQ_LLM_MODEL` is not available on your Groq account. Groq retires models from time to time, see https://console.groq.com/docs/deprecations. Remove the `GROQ_LLM_MODEL` line from `.env` to use the default, or set it to a model your account can use.
 
 ## Project files
 
@@ -192,4 +233,31 @@ Set at the top of the script:
 | `auto_caption_generator.py` | The tool |
 | `.env.example` | Template for `.env` |
 | `requirements.txt` | Python dependencies |
-| `.gitignore` | Keeps keys, tokens and generated files out of git |
+| `.gitignore` | Keeps keys, tokens, recordings and generated files out of git |
+| `LICENSE` | MIT license |
+| `CONTRIBUTING.md` | How to report bugs, suggest features and send pull requests |
+| `CODE_OF_CONDUCT.md` | Community rules |
+| `SECURITY.md` | How to report a vulnerability privately |
+| `CHANGELOG.md` | Notable changes between versions |
+| `CITATION.cff` | Citation metadata for the GitHub "Cite this repository" button |
+| `.github/` | CI workflow, Dependabot config, issue and pull request templates |
+
+## Privacy and security
+
+- Your audio is sent to Groq for transcription, and transcripts are sent to a Groq text model when conversion is needed. Read Groq's terms and data policy before captioning private or sensitive recordings.
+- Google Drive access is read-only. Files are downloaded to `drive_downloads/` and deleted after each file is captioned.
+- `credentials.json` and `token.json` stay on your machine. Treat them like passwords and never commit or share them.
+- This project sends no analytics or telemetry. The only network calls go to Groq and, if you use Drive, Google.
+- To report a security problem, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
+
+## Contributing
+
+Bug reports, ideas and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first, and please follow the [Code of Conduct](CODE_OF_CONDUCT.md). If the project is useful to you, a star on GitHub helps other people find it.
+
+## License
+
+Released under the [MIT License](LICENSE).
+
+Created by [Amaan Mohammed Khalander](https://github.com/Amaan9136).
+
+This project is not affiliated with or endorsed by Groq, Google or the FFmpeg project. Caption output comes from AI models and can contain mistakes, so review it before publishing.

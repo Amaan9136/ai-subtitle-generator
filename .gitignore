@@ -1,12 +1,27 @@
-# Secrets - never commit real keys/tokens
+# Secrets
 .env
+.env.*
+!.env.example
 credentials.json
+client_secret*.json
 token.json
+*.pem
+*.key
 
 # Generated / downloaded at runtime
 output_captions/
 drive_downloads/
 caption_temp/
+
+# Your own audio, video and captions (private recordings and transcripts)
+*.srt
+*.amr
+*.mp3
+*.wav
+*.m4a
+*.mp4
+*.mov
+*.mkv
 
 # Python
 __pycache__/
@@ -22,4 +37,4 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
-repomix-output.*
+repomix-output*

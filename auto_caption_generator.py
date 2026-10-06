@@ -3,6 +3,7 @@ import re
 import json
 import sys
 import time
+import shutil
 import subprocess
 from pathlib import Path
 try:
@@ -27,8 +28,8 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # FFmpeg configuration
 # ─────────────────────────────────────────────────────────────────────────────
-FFMPEG = r"C:\ffmpeg\bin\ffmpeg.exe"
-FFPROBE = r"C:\ffmpeg\bin\ffprobe.exe"
+FFMPEG = os.getenv("FFMPEG_PATH") or shutil.which("ffmpeg") or "ffmpeg"
+FFPROBE = os.getenv("FFPROBE_PATH") or shutil.which("ffprobe") or "ffprobe"
 # ─────────────────────────────────────────────────────────────────────────────
 # Folders
 # ─────────────────────────────────────────────────────────────────────────────
@@ -44,7 +45,7 @@ TEMP_DIR = BASE_DIR / "caption_temp"          # scratch space for extracted audi
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "whisper-large-v3")     # or "whisper-large-v3-turbo" (faster, still free tier)
 GROQ_LLM_MODEL = os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-120b")
-LLM_FALLBACK_MODELS = ["openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
+LLM_FALLBACK_MODELS = ["openai/gpt-oss-120b", "qwen/qwen3.6-27b", "openai/gpt-oss-20b"]
 RESOLVED_LLM_MODEL = None
 DEFAULT_SOURCE_LANG = os.getenv("SOURCE_LANG", "auto")
 DEFAULT_TARGET_LANG = os.getenv("TARGET_LANG", "hing")
@@ -185,6 +186,7 @@ def get_drive_service():
             flow = InstalledAppFlow.from_client_secrets_file(GOOGLE_CREDENTIALS_FILE, DRIVE_SCOPES)
             creds = flow.run_local_server(port=0)
         token_path.write_text(creds.to_json(), encoding="utf-8")
+        os.chmod(token_path, 0o600)
     return build("drive", "v3", credentials=creds)
 def drive_get_metadata(service, file_id):
     return service.files().get(fileId=file_id, fields="id, name, mimeType").execute()
@@ -193,7 +195,7 @@ def download_drive_file(service, file_id, dest_dir):
     import io
     metadata = drive_get_metadata(service, file_id)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest_path = dest_dir / metadata["name"]
+    dest_path = dest_dir / (Path(metadata["name"].replace("\\", "/")).name.lstrip(".") or file_id)
     request = service.files().get_media(fileId=file_id)
     buffer = io.FileIO(dest_path, "wb")
     downloader = MediaIoBaseDownload(buffer, request)
@@ -485,8 +487,8 @@ def process_video(video_path, downloaded_from_drive=False, source_lang=DEFAULT_S
     if not video_path.exists():
         print(f"File not found: {video_path}")
         return
-    if not Path(FFMPEG).is_file() or not Path(FFPROBE).is_file():
-        print("FFmpeg/FFprobe were not found at the configured paths. Check FFMPEG/FFPROBE at the top of the script.")
+    if not shutil.which(FFMPEG) or not shutil.which(FFPROBE):
+        print("FFmpeg/FFprobe were not found. Install them, add them to your PATH, or set FFMPEG_PATH and FFPROBE_PATH in your .env file.")
         return
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
