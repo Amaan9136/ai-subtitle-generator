@@ -1,0 +1,25 @@
+# Secrets - never commit real keys/tokens
+.env
+credentials.json
+token.json
+
+# Generated / downloaded at runtime
+output_captions/
+drive_downloads/
+caption_temp/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+repomix-output.*
