@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Amaan9136/ai-subtitle-generator/actions/workflows/ci.yml/badge.svg)](https://github.com/Amaan9136/ai-subtitle-generator/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 Generates `.srt` subtitle files from audio and video using Groq's hosted Whisper API. No model downloads, no GPU needed. It handles single files, whole folders, and Google Drive files or folders, and can write captions in English, Hindi, Urdu, Kannada, Malayalam or Hinglish.
@@ -30,7 +30,7 @@ On Windows PowerShell use `Copy-Item .env.example .env` instead of `cp`. Put you
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - FFmpeg and FFprobe installed, either on your `PATH` or set with `FFMPEG_PATH` and `FFPROBE_PATH` in `.env` (see [FFmpeg setup](#ffmpeg-setup))
 - A free Groq API key: https://console.groq.com/keys
 - Google Drive credentials, only if you use Drive links (see below)
