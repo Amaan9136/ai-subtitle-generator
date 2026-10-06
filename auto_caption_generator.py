@@ -414,7 +414,7 @@ def groq_convert_batch(texts, target_lang):
         if target_lang == "hing" else f"Translate into {LANGUAGE_NAMES[target_lang]}, written in its native script."
     )
     messages = [
-        {"role": "system", "content": f"You convert subtitle lines transcribed from speech that may mix English, Hindi, Urdu, Kannada and Malayalam. {instruction} Keep names and numbers, keep each line short and in the same order. {" Context about the audio: " + CUSTOM_PROMPT + "." if CUSTOM_PROMPT else ""} Reply with JSON only, in the form {{\"lines\": [...]}}, containing exactly {len(texts)} strings, one per input line."},
+        {"role": "system", "content": f"You convert subtitle lines transcribed from speech that may mix English, Hindi, Urdu, Kannada and Malayalam. {instruction} Keep names and numbers, keep each line short and in the same order. {' Context about the audio: ' + CUSTOM_PROMPT + '.' if CUSTOM_PROMPT else ''} Reply with JSON only, in the form {{\"lines\": [...]}}, containing exactly {len(texts)} strings, one per input line."},
         {"role": "user", "content": json.dumps(texts, ensure_ascii=False)},
     ]
     for _ in range(LLM_MAX_RETRIES):
