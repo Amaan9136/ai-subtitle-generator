@@ -509,7 +509,7 @@ def load_phoneme_model():
         return None
     device = "cuda" if torch.cuda.is_available() else "cpu"
     vocab = json.loads((path / "vocab.json").read_text(encoding="utf-8"))
-    PHONEME_STATE = (numpy, torch, Wav2Vec2ForCTC.from_pretrained(str(path), torch_dtype=torch.float16 if device == "cuda" else torch.float32).to(device).eval(), {i: t for t, i in vocab.items()}, device)
+    PHONEME_STATE = (numpy, torch, Wav2Vec2ForCTC.from_pretrained(str(path), dtype=torch.float16 if device == "cuda" else torch.float32).to(device).eval(), {i: t for t, i in vocab.items()}, device)
     print(f"\n  Phoneme model loaded from {path} on {device}." + ("" if device == "cuda" else " PyTorch cannot see a GPU, so this runs on the CPU. Install the CUDA build of PyTorch to use your GPU."))
     return PHONEME_STATE
 def recognise_phonemes(video_path, segments):
