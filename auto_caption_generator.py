@@ -62,6 +62,7 @@ GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
 GROQ_TIMEOUT_SECONDS = 300
 LLM_BATCH_SIZE = 25
 LLM_MAX_RETRIES = 3
+LLM_TIMEOUT_SECONDS = 60
 LLM_MAX_COMPLETION_TOKENS = 8192
 # Groq's free tier caps uploads at 25MB per file. We keep chunks tiny and safe
 # by re-encoding audio to a small mono/low-bitrate mp3 and splitting long
@@ -446,14 +447,17 @@ def groq_convert_batch(texts, target_lang):
         {"role": "user", "content": json.dumps(texts, ensure_ascii=False)},
     ]
     for _ in range(LLM_MAX_RETRIES):
-        response = requests.post(
-            GROQ_CHAT_URL,
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={"model": resolve_llm_model(), "messages": messages, "temperature": 0.2, "response_format": {"type": "json_object"}, "max_completion_tokens": LLM_MAX_COMPLETION_TOKENS, **({"reasoning_effort": "low"} if resolve_llm_model().startswith("openai/gpt-oss") else {})},
-            timeout=GROQ_TIMEOUT_SECONDS,
-        )
+        try:
+            response = requests.post(
+                GROQ_CHAT_URL,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                json={"model": resolve_llm_model(), "messages": messages, "temperature": 0.2, "response_format": {"type": "json_object"}, "max_completion_tokens": LLM_MAX_COMPLETION_TOKENS, **({"reasoning_effort": "low"} if resolve_llm_model().startswith("openai/gpt-oss") else {})},
+                timeout=LLM_TIMEOUT_SECONDS,
+            )
+        except requests.Timeout:
+            continue
         if response.status_code == 429:
-            time.sleep(float(response.headers.get("retry-after", 10)))
+            time.sleep(min(float(response.headers.get("retry-after", 10)), 30))
             continue
         if response.status_code == 400 and "json_validate_failed" in response.text:
             continue
@@ -505,8 +509,8 @@ def load_phoneme_model():
         return None
     device = "cuda" if torch.cuda.is_available() else "cpu"
     vocab = json.loads((path / "vocab.json").read_text(encoding="utf-8"))
-    PHONEME_STATE = (numpy, torch, Wav2Vec2ForCTC.from_pretrained(str(path)).to(device).eval(), {i: t for t, i in vocab.items()}, device)
-    print(f"\n  Phoneme model loaded from {path} on {device}.")
+    PHONEME_STATE = (numpy, torch, Wav2Vec2ForCTC.from_pretrained(str(path), torch_dtype=torch.float16 if device == "cuda" else torch.float32).to(device).eval(), {i: t for t, i in vocab.items()}, device)
+    print(f"\n  Phoneme model loaded from {path} on {device}." + ("" if device == "cuda" else " PyTorch cannot see a GPU, so this runs on the CPU. Install the CUDA build of PyTorch to use your GPU."))
     return PHONEME_STATE
 def recognise_phonemes(video_path, segments):
     state = load_phoneme_model()
@@ -526,8 +530,8 @@ def recognise_phonemes(video_path, segments):
             if len(wave) < 1600:
                 continue
             wave = (wave - wave.mean()) / numpy.sqrt(wave.var() + 1e-7)
-            with torch.no_grad():
-                ids = model(torch.from_numpy(wave)[None].to(device)).logits[0].argmax(-1).tolist()
+            with torch.inference_mode():
+                ids = model(torch.from_numpy(wave)[None].to(device, model.dtype)).logits[0].argmax(-1).tolist()
             sounds += [id2tok[i] for k, i in enumerate(ids) if (k == 0 or i != ids[k - 1]) and id2tok[i] not in ("<pad>", "<s>", "</s>", "<unk>")]
         results.append(" ".join(sounds))
     print_progress_bar(100, prefix=label, suffix="| done" + " " * 10)

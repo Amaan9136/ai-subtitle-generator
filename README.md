@@ -172,7 +172,7 @@ The phoneme model is the only local download. It is about 1.3 GB (the model has 
 2. The hidden `models/` folder next to the script
 3. Your Hugging Face cache
 
-If none has it, it is downloaded once into `models/`. That folder is hidden: on Windows it gets the Hidden attribute, on macOS and Linux it is named `.models/`. It is in `.gitignore`. A GPU is used when PyTorch can see one, otherwise the CPU, which is slower.
+If none has it, it is downloaded once into `models/`. That folder is hidden: on Windows it gets the Hidden attribute, on macOS and Linux it is named `.models/`. It is in `.gitignore`. A GPU is used (in half precision) when PyTorch can see one, otherwise the CPU, which is slower. If the log says it runs on the CPU, install the CUDA build of PyTorch from pytorch.org. Requests to the Groq text model time out after 60 seconds and are retried.
 
 It needs the extra libraries once:
 
@@ -264,7 +264,7 @@ Set at the top of the script:
 - **A file keeps being skipped:** a `<name>-<src>-translate-<lang>.srt`, `<name>-<src>-transcribe-<lang>.srt` or `<name>-<src>-transliterate-<lang>.srt` for that language exists in the folder or in `output_captions/`. Delete it to redo the file.
 - **The phoneme model libraries are missing:** run `pip install -r requirements-auto.txt`. Until then `auto` captions use the Whisper text only.
 - **The phoneme model download fails:** check your internet connection and free disk space (about 1.3 GB), then run again. Or download the model yourself and set `PHONEME_MODEL_PATH` to its folder.
-- **`auto` captions are slow:** the phoneme model runs on your machine. A GPU with CUDA PyTorch is much faster than the CPU.
+- **`auto` captions are slow:** the phoneme model runs on your machine. A GPU with CUDA PyTorch is much faster than the CPU. If the conversion step sits at 0%, the wait is on the Groq text model (rate limit or slow reply), which now times out after 60 seconds and retries.
 - **Model not found (404):** the model in `GROQ_LLM_MODEL` is not available on your Groq account. Groq retires models from time to time, see https://console.groq.com/docs/deprecations. Remove the `GROQ_LLM_MODEL` line from `.env` to use the default, or set it to a model your account can use.
 
 ## Project files
