@@ -60,7 +60,7 @@ GROQ_API_BASE = "https://api.groq.com/openai/v1/audio"
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
 GROQ_TIMEOUT_SECONDS = 300
-LLM_BATCH_SIZE = 25
+LLM_BATCH_SIZE = 10
 LLM_MAX_RETRIES = 3
 LLM_TIMEOUT_SECONDS = 60
 LLM_MAX_COMPLETION_TOKENS = 8192
@@ -455,8 +455,10 @@ def groq_convert_batch(texts, target_lang):
                 timeout=LLM_TIMEOUT_SECONDS,
             )
         except requests.Timeout:
+            print(f"\n  Groq text model timed out after {LLM_TIMEOUT_SECONDS}s, retrying...")
             continue
         if response.status_code == 429:
+            print("\n  Groq rate limit hit, waiting before retrying...")
             time.sleep(min(float(response.headers.get("retry-after", 10)), 30))
             continue
         if response.status_code == 400 and "json_validate_failed" in response.text:
