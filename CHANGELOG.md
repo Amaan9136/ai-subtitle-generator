@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-10-07
+
+### Added
+
+- `auto` caption language for sound-to-sound, word-for-word captions in English letters, whatever language is spoken. Whisper runs with `temperature` 0.2 and a literal filler-word prompt for the timings, a local Wav2Vec 2.0 phoneme model reads the actual sounds of each line, and the Groq text model writes them in English letters without translating. Output is saved as `<name>-<src>-transliterate-auto.srt`.
+- Local phoneme model (`facebook/wav2vec2-lv-60-espeak-cv-ft`, about 1.3 GB). It is looked for in `PHONEME_MODEL_PATH`, the hidden `models/` folder and the Hugging Face cache, and downloaded once into `models/` (hidden on Windows, `.models/` on macOS and Linux) when missing.
+- `requirements-auto.txt` with the extra libraries for `auto` captions, and `PHONEME_MODEL` and `PHONEME_MODEL_PATH` settings.
+- `models/` and `.models/` added to `.gitignore`.
+- `LITERAL_PROMPT` and `LITERAL_TEMPERATURE` constants.
+
+[1.0.1]: https://github.com/Amaan9136/ai-subtitle-generator/releases/tag/v1.0.1
+
 ## [1.0.0] - 2026-10-07
 
 First public release.

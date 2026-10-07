@@ -50,10 +50,16 @@ RESOLVED_LLM_MODEL = None
 DEFAULT_SOURCE_LANG = os.getenv("SOURCE_LANG", "auto")
 DEFAULT_TARGET_LANG = os.getenv("TARGET_LANG", "hing")
 CUSTOM_PROMPT = os.getenv("CUSTOM_PROMPT", "")
+LITERAL_PROMPT = "Umm, uh, let's see... so like, reference code, standard accent, dunno, gonna, standard, 'cause, yeah."
+LITERAL_TEMPERATURE = 0.2
+PHONEME_MODEL = os.getenv("PHONEME_MODEL", "facebook/wav2vec2-lv-60-espeak-cv-ft")
+MODELS_DIR = BASE_DIR / ("models" if os.name == "nt" else ".models")
+PHONEME_DIR = MODELS_DIR / PHONEME_MODEL.split("/")[-1]
+PHONEME_STATE = None
 GROQ_API_BASE = "https://api.groq.com/openai/v1/audio"
 GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
-GROQ_TIMEOUT_SECONDS = 120
+GROQ_TIMEOUT_SECONDS = 300
 LLM_BATCH_SIZE = 25
 LLM_MAX_RETRIES = 3
 LLM_MAX_COMPLETION_TOKENS = 8192
@@ -76,12 +82,12 @@ DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v", ".flv", ".wmv", ".3gp", ".3g2", ".mpg", ".mpeg", ".mts", ".m2ts", ".ogv", ".vob", ".asf"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac", ".amr", ".awb", ".wma", ".aiff", ".aif", ".3ga", ".caf", ".mka", ".ac3", ".mp2", ".weba", ".m4b"}
 MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
-LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "ur": "Urdu", "kn": "Kannada", "ml": "Malayalam", "hing": "Hinglish"}
+LANGUAGE_NAMES = {"en": "English", "hi": "Hindi", "ur": "Urdu", "kn": "Kannada", "ml": "Malayalam", "hing": "Hinglish", "auto": "Auto (sound-based, English letters)"}
 LANGUAGE_CODES = {name.lower(): code for code, name in LANGUAGE_NAMES.items()}
-SRT_KINDS = ("translate", "transcribe")
+SRT_KINDS = ("translate", "transcribe", "transliterate")
 LANGUAGE_ALIASES = {"ka": "kn", "ma": "ml", "hinglish": "hing"}
 SOURCE_OPTIONS = ["auto", "en", "hi", "ur", "kn", "ml"]
-TARGET_OPTIONS = ["en", "hi", "ur", "kn", "ml", "hing"]
+TARGET_OPTIONS = ["en", "hi", "ur", "kn", "ml", "hing", "auto"]
 # ─────────────────────────────────────────────────────────────────────────────
 # Small shared helpers (same style as the rest of the project)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -220,7 +226,7 @@ def list_drive_folder_files(service, folder_id):
     page_token = None
     while True:
         response = service.files().list(
-            q=query, spaces="drive", fields="nextPageToken, files(id, name, mimeType)",
+            q=query, spaces="drive", fields="nextPageToken, files(id, name, mimeType, size)",
             pageToken=page_token,
         ).execute()
         results.extend(response.get("files", []))
@@ -238,7 +244,7 @@ def resolve_inputs(raw_input_text, target_lang):
         if metadata["mimeType"] == "application/vnd.google-apps.folder":
             files = list_drive_folder_files(service, drive_id)
             drive_names = {f["name"].lower() for f in files}
-            media = [f for f in files if is_media(f["name"])]
+            media = sorted((f for f in files if is_media(f["name"])), key=lambda f: int(f.get("size") or 0))
             videos = [f for f in media if not any(srt_regex(Path(f["name"]).stem, target_lang).fullmatch(name) for name in drive_names) and not srt_exists(Path(f["name"]).stem, target_lang)]
             if not media:
                 print("No audio or video files were found in that Google Drive folder.")
@@ -251,7 +257,7 @@ def resolve_inputs(raw_input_text, target_lang):
         return [(download_drive_file(service, drive_id, DOWNLOAD_DIR), True)]
     local_path = Path(text)
     if local_path.is_dir():
-        media = sorted(p for p in local_path.iterdir() if p.is_file() and is_media(p))
+        media = sorted((p for p in local_path.iterdir() if p.is_file() and is_media(p)), key=lambda p: (p.stat().st_size, p.name.lower()))
         videos = [p for p in media if not srt_exists(p.stem, target_lang, local_path)]
         if not media:
             print(f"No audio or video files were found in: {local_path}")
@@ -270,18 +276,19 @@ def resolve_inputs(raw_input_text, target_lang):
 # ─────────────────────────────────────────────────────────────────────────────
 def extract_audio_chunk(video_path, start_seconds, chunk_duration, out_path, progress_label=""):
     command = [
-        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+        FFMPEG, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
         "-ss", str(start_seconds), "-t", str(chunk_duration),
         "-i", str(video_path), "-vn", "-ac", "1", "-ar", "16000",
         "-c:a", "libmp3lame", "-b:a", AUDIO_BITRATE_FOR_STT,
         "-progress", "pipe:1", "-nostats", str(out_path),
     ]
     process = subprocess.Popen(
-        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace", bufsize=1,
     )
     current = 0.0
     start_time = time.time()
+    log = []
     while True:
         line = process.stdout.readline()
         if not line:
@@ -297,18 +304,20 @@ def extract_audio_chunk(video_path, start_seconds, chunk_duration, out_path, pro
         elif line == "progress=end":
             current = chunk_duration
         else:
+            if not re.match(r"\w+=", line):
+                log.append(line)
             continue
         percent = (current / chunk_duration * 100) if chunk_duration > 0 else 100
         elapsed = time.time() - start_time
         print_progress_bar(percent, prefix=f"  {progress_label} extracting audio",
                             suffix=f"| {format_time(elapsed)} elapsed")
     process.wait()
-    stderr_output = process.stderr.read()
+    stderr_output = "\n".join(log[-10:])
     print_progress_bar(100, prefix=f"  {progress_label} extracting audio", suffix="| done" + " " * 10)
     print()
     if process.returncode != 0:
         raise RuntimeError(f"FFmpeg failed to extract audio: {stderr_output.strip()[:500]}")
-def groq_transcribe_chunk(audio_path, progress_label="", language=None, translate=False):
+def groq_transcribe_chunk(audio_path, progress_label="", language=None, translate=False, literal=False):
     if not GROQ_API_KEY:
         print("\nGROQ_API_KEY is not set.")
         print("Get a free key at https://console.groq.com/keys and put it in your .env file.")
@@ -321,8 +330,10 @@ def groq_transcribe_chunk(audio_path, progress_label="", language=None, translat
     }
     if language and not translate:
         fields["language"] = language
-    if CUSTOM_PROMPT:
-        fields["prompt"] = CUSTOM_PROMPT[:500]
+    if literal:
+        fields["temperature"] = str(LITERAL_TEMPERATURE)
+    if literal or CUSTOM_PROMPT:
+        fields["prompt"] = f"{LITERAL_PROMPT} {CUSTOM_PROMPT}"[:500] if literal else CUSTOM_PROMPT[:500]
     with open(audio_path, "rb") as audio_file:
         if HAS_UPLOAD_PROGRESS:
             fields["file"] = (audio_path.name, audio_file, "audio/mpeg")
@@ -356,22 +367,38 @@ def groq_transcribe_chunk(audio_path, progress_label="", language=None, translat
             )
             print("done.")
     if response.status_code != 200:
-        raise RuntimeError(f"Groq API error {response.status_code}: {response.text[:500]}")
+        raise RuntimeError(f"Groq API error {response.status_code}: {response.text[:500]} retry-after={response.headers.get('retry-after', '')}")
     return response.json()
 def transcribe_video(video_path, duration, source_lang, target_lang):
     segments = []
     detected = None
     chunk_start = 0.0
     chunk_index = 0
-    total_chunks = max(1, int(duration // AUDIO_CHUNK_SECONDS) + 1)
+    total_chunks = max(1, -int(-duration // AUDIO_CHUNK_SECONDS) - (1 if duration > AUDIO_CHUNK_SECONDS and 0 < duration % AUDIO_CHUNK_SECONDS < 30 else 0))
     while chunk_start < duration:
-        chunk_duration = min(AUDIO_CHUNK_SECONDS, duration - chunk_start)
+        chunk_duration = duration - chunk_start if chunk_index + 1 >= total_chunks else AUDIO_CHUNK_SECONDS
         chunk_path = TEMP_DIR / f"{video_path.stem}_chunk{chunk_index}.mp3"
         chunk_label = f"[chunk {chunk_index + 1}/{total_chunks}, {format_time(chunk_start)}-{format_time(chunk_start + chunk_duration)}]"
         print()
         extract_audio_chunk(video_path, chunk_start, chunk_duration, chunk_path, progress_label=chunk_label)
+        result = {}
         try:
-            result = groq_transcribe_chunk(chunk_path, progress_label=chunk_label, language=None if source_lang == "auto" else source_lang, translate=target_lang == "en" and source_lang != "en")
+            if chunk_path.exists() and chunk_path.stat().st_size >= 2048:
+                for attempt in range(4):
+                    try:
+                        result = groq_transcribe_chunk(chunk_path, progress_label=chunk_label, language=None if source_lang == "auto" else source_lang, translate=target_lang == "en" and source_lang != "en", literal=target_lang == "auto")
+                        break
+                    except (RuntimeError, requests.RequestException) as error:
+                        if "invalid_media_file" in str(error):
+                            print(f"  {chunk_label} skipped, Groq could not read this audio chunk.")
+                            break
+                        if attempt == 3 or not (isinstance(error, requests.RequestException) or any(f"error {code}:" in str(error) for code in (429, 500, 502, 503, 504))):
+                            raise RuntimeError(str(error)) from error
+                        wait = min(120, float(m.group(1)) if (m := re.search(r"retry-after=([\d.]+)", str(error))) else 20 * (attempt + 1))
+                        print(f"\n  {chunk_label} {str(error)[:100]} - retrying in {wait:.0f}s ({attempt + 1}/3)")
+                        time.sleep(wait)
+            else:
+                print(f"  {chunk_label} no audio in this range, skipped.")
         finally:
             # Always remove the temp audio chunk once it's been uploaded (success or failure).
             chunk_path.unlink(missing_ok=True)
@@ -394,7 +421,7 @@ def transcribe_video(video_path, duration, source_lang, target_lang):
         chunk_index += 1
     return segments, detected
 def needs_conversion(source_lang, target_lang):
-    return target_lang != "en" and target_lang != source_lang and not (source_lang == "en" and target_lang == "hing")
+    return target_lang == "auto" or target_lang != "en" and target_lang != source_lang and not (source_lang == "en" and target_lang == "hing")
 def resolve_llm_model():
     global RESOLVED_LLM_MODEL
     if RESOLVED_LLM_MODEL:
@@ -410,7 +437,8 @@ def resolve_llm_model():
     return RESOLVED_LLM_MODEL
 def groq_convert_batch(texts, target_lang):
     instruction = (
-        "Translate the meaning into Hinglish: natural spoken Hindi/Urdu written in Roman (English) letters the way people text it, keeping English words as they are. Never use Devanagari, Arabic, Kannada or Malayalam script."
+        "Do NOT translate and do NOT fix grammar. A line may look like 'IPA: <phonemes actually heard> | HEARD: <rough speech-to-text guess>'. Treat the IPA as the truth for the sounds and use HEARD only to find word boundaries. If a line has no IPA part, transliterate the text itself. Write every word, in order, in plain English (Roman) letters exactly as it sounds, whatever language it is spoken in, keeping every filler and repetition. Never output IPA symbols, the IPA/HEARD labels or any non-Latin script."
+        if target_lang == "auto" else "Translate the meaning into Hinglish: natural spoken Hindi/Urdu written in Roman (English) letters the way people text it, keeping English words as they are. Never use Devanagari, Arabic, Kannada or Malayalam script."
         if target_lang == "hing" else f"Translate into {LANGUAGE_NAMES[target_lang]}, written in its native script."
     )
     messages = [
@@ -440,7 +468,72 @@ def groq_convert_batch(texts, target_lang):
     if len(texts) > 1:
         return groq_convert_batch(texts[:len(texts) // 2], target_lang) + groq_convert_batch(texts[len(texts) // 2:], target_lang)
     raise RuntimeError("Groq did not return usable converted lines.")
-def convert_segments(segments, target_lang):
+def find_phoneme_model(snapshot_download):
+    candidates = [os.getenv("PHONEME_MODEL_PATH"), PHONEME_DIR]
+    try:
+        candidates.append(snapshot_download(PHONEME_MODEL, local_files_only=True))
+    except Exception:
+        pass
+    return next((Path(c) for c in candidates if c and (Path(c) / "config.json").is_file() and any((Path(c) / f).is_file() for f in ("model.safetensors", "pytorch_model.bin"))), None)
+def download_phoneme_model(snapshot_download):
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        subprocess.run(["attrib", "+h", str(MODELS_DIR)], capture_output=True)
+    print(f"\n  Phoneme model not found on this computer. Downloading {PHONEME_MODEL} (about 1.3 GB, one time only) into {MODELS_DIR}...")
+    for revision, weights in (("refs/pr/2", "model.safetensors"), (None, "model.safetensors"), (None, "pytorch_model.bin")):
+        try:
+            return Path(snapshot_download(PHONEME_MODEL, revision=revision, local_dir=PHONEME_DIR, allow_patterns=["*.json", weights]))
+        except Exception as error:
+            print(f"  Download attempt failed: {str(error)[:200]}")
+    return None
+def load_phoneme_model():
+    global PHONEME_STATE
+    if PHONEME_STATE:
+        return PHONEME_STATE
+    try:
+        import numpy
+        import torch
+        from huggingface_hub import snapshot_download
+        from transformers import Wav2Vec2ForCTC
+    except ImportError:
+        print("\n  The local phoneme model needs extra libraries. Run: pip install -r requirements-auto.txt")
+        print("  Continuing with Whisper text only.")
+        return None
+    path = find_phoneme_model(snapshot_download) or download_phoneme_model(snapshot_download)
+    if not path:
+        print("\n  Could not get the phoneme model. Continuing with Whisper text only.")
+        return None
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    vocab = json.loads((path / "vocab.json").read_text(encoding="utf-8"))
+    PHONEME_STATE = (numpy, torch, Wav2Vec2ForCTC.from_pretrained(str(path)).to(device).eval(), {i: t for t, i in vocab.items()}, device)
+    print(f"\n  Phoneme model loaded from {path} on {device}.")
+    return PHONEME_STATE
+def recognise_phonemes(video_path, segments):
+    state = load_phoneme_model()
+    if not state:
+        return None
+    numpy, torch, model, id2tok, device = state
+    audio = numpy.frombuffer(subprocess.run(
+        [FFMPEG, "-nostdin", "-hide_banner", "-loglevel", "error", "-i", str(video_path), "-vn", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
+        stdin=subprocess.DEVNULL, capture_output=True).stdout, dtype=numpy.int16)
+    label = "  recognising sounds locally"
+    results = []
+    for index, (start, end, _) in enumerate(segments):
+        print_progress_bar(index / len(segments) * 100, prefix=label, suffix=f"| {index}/{len(segments)} lines")
+        sounds = []
+        for window in range(int(start * 16000), int(end * 16000), 320000):
+            wave = audio[window:min(window + 320000, int(end * 16000))].astype(numpy.float32) / 32768
+            if len(wave) < 1600:
+                continue
+            wave = (wave - wave.mean()) / numpy.sqrt(wave.var() + 1e-7)
+            with torch.no_grad():
+                ids = model(torch.from_numpy(wave)[None].to(device)).logits[0].argmax(-1).tolist()
+            sounds += [id2tok[i] for k, i in enumerate(ids) if (k == 0 or i != ids[k - 1]) and id2tok[i] not in ("<pad>", "<s>", "</s>", "<unk>")]
+        results.append(" ".join(sounds))
+    print_progress_bar(100, prefix=label, suffix="| done" + " " * 10)
+    print()
+    return results
+def convert_segments(segments, target_lang, hints=None):
     label = f"  converting to {LANGUAGE_NAMES[target_lang]}"
     converted = []
     failed = 0
@@ -448,7 +541,7 @@ def convert_segments(segments, target_lang):
         batch = segments[batch_start:batch_start + LLM_BATCH_SIZE]
         print_progress_bar(batch_start / len(segments) * 100, prefix=label, suffix=f"| {batch_start}/{len(segments)} lines")
         try:
-            texts = groq_convert_batch([text for _, _, text in batch], target_lang)
+            texts = groq_convert_batch([f"IPA: {hints[batch_start + i]} | HEARD: {text}" if hints and hints[batch_start + i] else text for i, (_, _, text) in enumerate(batch)], target_lang)
         except (RuntimeError, requests.RequestException) as error:
             print(f"\n  Conversion failed for lines {batch_start + 1}-{batch_start + len(batch)}: {error}")
             failed += 1
@@ -499,7 +592,7 @@ def process_video(video_path, downloaded_from_drive=False, source_lang=DEFAULT_S
         return
     srt_dir = OUTPUT_DIR if downloaded_from_drive else video_path.parent
     converting = needs_conversion(source_lang, target_lang)
-    saved_transcript = find_transcript(video_path.stem, srt_dir) if converting else None
+    saved_transcript = find_transcript(video_path.stem, srt_dir) if converting and target_lang != "auto" else None
     saved = []
     failed = 0
     try:
@@ -509,11 +602,11 @@ def process_video(video_path, downloaded_from_drive=False, source_lang=DEFAULT_S
         else:
             print("\nTranscribing via Groq's hosted Whisper API (online - nothing downloaded locally)...")
             segments, detected = transcribe_video(video_path, duration, source_lang, target_lang)
-            if segments and converting:
+            if segments and converting and target_lang != "auto":
                 saved.append(srt_dir / srt_name(video_path.stem, source_lang, "transcribe", source_lang if source_lang != "auto" else LANGUAGE_CODES.get((detected or "").lower(), (detected or "auto").lower())))
                 write_srt(segments, saved[-1])
         if segments and converting:
-            segments, failed = convert_segments(segments, target_lang)
+            segments, failed = convert_segments(segments, target_lang, recognise_phonemes(video_path, segments) if target_lang == "auto" else None)
     except RuntimeError as error:
         print(f"\nGroq API request failed: {error}")
         cleanup_after_video(video_path, downloaded_from_drive)
@@ -523,9 +616,9 @@ def process_video(video_path, downloaded_from_drive=False, source_lang=DEFAULT_S
         cleanup_after_video(video_path, downloaded_from_drive)
         return
     if failed:
-        print(f"\n{failed} batch(es) failed to convert, so no translation file was written. Run again to retry from the saved transcript.")
+        print(f"\n{failed} batch(es) failed to convert, so no translation file was written. Run again to retry{'' if target_lang == 'auto' else ' from the saved transcript'}.")
     else:
-        saved.append(srt_dir / srt_name(video_path.stem, source_lang, "translate" if converting or (target_lang == "en" and source_lang != "en") else "transcribe", target_lang))
+        saved.append(srt_dir / srt_name(video_path.stem, source_lang, "transliterate" if target_lang == "auto" else "translate" if converting or (target_lang == "en" and source_lang != "en") else "transcribe", target_lang))
         write_srt(segments, saved[-1])
     print("=" * 80)
     print("INCOMPLETE" if failed else "COMPLETE")
@@ -568,7 +661,7 @@ def main():
         print("GROQ_API_KEY=your_key_here")
         print("Get a free key at https://console.groq.com/keys")
         sys.exit(1)
-    print("\nLanguage codes: en English | hi Hindi | ur Urdu | kn Kannada (ka works too) | ml Malayalam (ma works too) | hing Hinglish")
+    print("\nLanguage codes: en English | hi Hindi | ur Urdu | kn Kannada (ka works too) | ml Malayalam (ma works too) | hing Hinglish | auto sound-based English letters (caption language only)")
     print("Audio language can also be 'auto' to let Whisper detect it.")
     source_lang = ask_language("\nAudio language (what is spoken)", DEFAULT_SOURCE_LANG, SOURCE_OPTIONS)
     target_lang = ask_language("Caption language (what the .srt should contain)", DEFAULT_TARGET_LANG, TARGET_OPTIONS)
@@ -584,6 +677,10 @@ def main():
     total_videos = len(videos)
     for index, (video_path, downloaded_from_drive) in enumerate(videos, start=1):
         print(f"\n[File {index}/{total_videos}]")
-        process_video(video_path, downloaded_from_drive, source_lang, target_lang)
+        try:
+            process_video(video_path, downloaded_from_drive, source_lang, target_lang)
+        except Exception as error:
+            print(f"\nFailed on {Path(video_path).name}: {error}")
+            cleanup_after_video(video_path, downloaded_from_drive)
 if __name__ == "__main__":
     main()

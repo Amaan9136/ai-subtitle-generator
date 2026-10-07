@@ -62,11 +62,11 @@ Then run the tool by hand on a short audio clip for the languages your change to
 - Keep the script working on Python 3.10 and newer.
 - Read secrets only from environment variables or `.env`. Never hardcode keys, tokens or personal paths.
 - Treat anything that comes from outside as untrusted: Google Drive file names, API responses and user input.
-- Do not add a dependency unless it is needed. If you add one, put it in `requirements.txt` and mention it in your pull request.
+- Do not add a dependency unless it is needed. If you add one, put it in `requirements.txt` (or `requirements-auto.txt` if only the `auto` sound-to-sound mode needs it) and mention it in your pull request.
 
 ### Adding a language
 
-Language support lives in the constants near the top of `auto_caption_generator.py`: `LANGUAGE_NAMES`, `SOURCE_OPTIONS`, `TARGET_OPTIONS` and `LANGUAGE_ALIASES`. Add the language there, update the language tables in the README and `.env.example`, and test both transcription and conversion with real audio.
+Language support lives in the constants near the top of `auto_caption_generator.py`: `LANGUAGE_NAMES`, `SOURCE_OPTIONS`, `TARGET_OPTIONS` and `LANGUAGE_ALIASES`. `auto` is a special caption language (sound-to-sound in English letters) handled by `LITERAL_PROMPT`, `LITERAL_TEMPERATURE`, `needs_conversion` and the local phoneme model (`recognise_phonemes`). Add the language there, update the language tables in the README and `.env.example`, and test both transcription and conversion with real audio.
 
 ## Documentation
 

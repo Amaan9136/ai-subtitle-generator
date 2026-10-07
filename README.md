@@ -5,7 +5,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-Generates `.srt` subtitle files from audio and video using Groq's hosted Whisper API. No model downloads, no GPU needed. It handles single files, whole folders, and Google Drive files or folders, and can write captions in English, Hindi, Urdu, Kannada, Malayalam or Hinglish.
+Generates `.srt` subtitle files from audio and video using Groq's hosted Whisper API. No model downloads and no GPU needed, except the optional phoneme model for `auto` captions. It handles single files, whole folders, and Google Drive files or folders, and can write captions in English, Hindi, Urdu, Kannada, Malayalam or Hinglish, or write every word as it sounds in English letters with no translation (`auto` caption language).
 
 ## Quick start
 
@@ -24,7 +24,8 @@ On Windows PowerShell use `Copy-Item .env.example .env` instead of `cp`. Put you
 - Audio and video input, including WhatsApp `.amr` voice notes
 - Local files, local folders, Google Drive files and Google Drive folders
 - You choose the spoken language and the caption language every run
-- Typed and language-suffixed output (`name-auto-translate-hing.srt`, `name-auto-transcribe-hi.srt`) so transcripts and translations are both kept and never overwrite each other
+- `auto` as the caption language gives sound-to-sound, word-for-word captions in English letters, whatever language is spoken, using a local phoneme model
+- Typed and language-suffixed output (`name-auto-translate-hing.srt`, `name-auto-transcribe-hi.srt`, `name-auto-transliterate-auto.srt`) so transcripts and translations are both kept and never overwrite each other
 - Files that already have a caption for the chosen language are skipped automatically
 - Long audio is split into 10-minute chunks and the timestamps are stitched back together
 
@@ -49,7 +50,13 @@ pip install -r requirements.txt
 pip install requests-toolbelt
 ```
 
-3. Copy `.env.example` to `.env` and add your key:
+3. Optional, only for `auto` (sound-to-sound) captions. This installs PyTorch and Transformers:
+
+```powershell
+pip install -r requirements-auto.txt
+```
+
+4. Copy `.env.example` to `.env` and add your key:
 
 ```env
 GROQ_API_KEY=your_groq_api_key_here
@@ -103,7 +110,7 @@ You are asked three things, in this order:
 
 ```
 Audio language (what is spoken) [auto/en/hi/ur/kn/ml] (Enter = auto):
-Caption language (what the .srt should contain) [en/hi/ur/kn/ml/hing] (Enter = hing):
+Caption language (what the .srt should contain) [en/hi/ur/kn/ml/hing/auto] (Enter = hing):
 Enter file/folder path or Google Drive link/ID:
 ```
 
@@ -123,7 +130,7 @@ Paths with spaces work, with or without quotes. Folders are read one level deep,
 
 | Code | Language | As audio language | As caption language |
 |---|---|---|---|
-| `auto` | Let Whisper detect the language | Yes | No |
+| `auto` | Audio: Whisper detects the language. Captions: every word written as it sounds in English letters, no translation | Yes | Yes |
 | `en` | English | Yes | Yes |
 | `hi` | Hindi (Devanagari script) | Yes | Yes |
 | `ur` | Urdu | Yes | Yes |
@@ -143,6 +150,7 @@ Paths with spaces work, with or without quotes. Folders are read one level deep,
 | Any other language, or `auto` | English | Translated to English by Whisper |
 | Any other language, or `auto` | Hinglish, Hindi, Urdu, Kannada or Malayalam | Transcribed, then translated by the text model |
 | Hindi, Urdu, Kannada or Malayalam | The same language | Transcribed as is |
+| Any language, or `auto` | `auto` | Transcribed literally, then written word for word in English letters as it sounds. No translation |
 
 Examples:
 
@@ -150,27 +158,53 @@ Examples:
 - Malayalam audio, `hing` captions: Malayalam is transcribed, then the meaning is written as Hindi in English letters, for example "kya haal hai"
 - Hindi audio, `hing` captions: the Hindi is written in English letters
 
+### Sound-to-sound captions (`auto` caption language)
+
+Use `auto` for both prompts to get a word-for-word transcript in English letters, whatever language is spoken. The text is written from how each line sounds, not from what a language model thinks was said.
+
+1. Groq's Whisper runs with `temperature` set to `0.2` and a casual prompt full of filler words and contractions (`LITERAL_PROMPT`), so it writes down what it hears instead of correcting grammar. Your `CUSTOM_PROMPT` is added after it. This gives the line timings and a rough text.
+2. A local Wav2Vec 2.0 phoneme model (`facebook/wav2vec2-lv-60-espeak-cv-ft`) listens to each line again and writes the real phonemes (IPA), in any language.
+3. The Groq text model turns the phonemes into plain English letters, using the rough Whisper text only to find word boundaries. It does not translate.
+
+The phoneme model is the only local download. It is about 1.3 GB (the model has 300 million parameters, but the weights file is far bigger than 300 MB). The script looks for it, in this order:
+
+1. The folder in `PHONEME_MODEL_PATH`, if you set it
+2. The hidden `models/` folder next to the script
+3. Your Hugging Face cache
+
+If none has it, it is downloaded once into `models/`. That folder is hidden: on Windows it gets the Hidden attribute, on macOS and Linux it is named `.models/`. It is in `.gitignore`. A GPU is used when PyTorch can see one, otherwise the CPU, which is slower.
+
+It needs the extra libraries once:
+
+```powershell
+pip install -r requirements-auto.txt
+```
+
+Without them, `auto` captions still work but only from the Whisper text, and a message says so. The spelling is chosen by the text model, so the same sound can be spelled slightly differently between lines.
+
 Hinglish here means the meaning rendered as Hindi in English letters with English words kept as they are. It is not a letter-by-letter spelling of Malayalam or Kannada. Spelling is chosen by the AI model, so the same word can be spelled slightly differently between lines.
 
 ### How it works
 
 1. FFmpeg extracts the audio in 10-minute mono mp3 chunks.
 2. Each chunk goes to Groq's Whisper (`transcriptions` with your audio language, or `translations` when the captions are English and the audio is not).
-3. If the caption language needs conversion, the transcript is sent to a Groq text model in batches of 25 lines and returned with the original timings.
-4. The transcript is saved as `<name>-<audio language>-transcribe-<spoken language>.srt` before conversion, then the converted captions as `<name>-<audio language>-translate-<caption language>.srt`. If a batch fails to convert, no translation file is written, a warning is printed, and the next run reuses the saved transcript and only repeats the conversion.
+3. If the caption language needs conversion, the transcript is sent to a Groq text model in batches of 25 lines and returned with the original timings. For `auto` captions step 2 uses literal transcription (`temperature` 0.2 and `LITERAL_PROMPT`) and this step only transliterates into English letters.
+4. The transcript is saved as `<name>-<audio language>-transcribe-<spoken language>.srt` before conversion, then the converted captions as `<name>-<audio language>-translate-<caption language>.srt`. With `auto` captions the raw transcript is not saved, and the single output is `<name>-<audio language>-transliterate-auto.srt`. If a batch fails to convert, no translation file is written, a warning is printed, and the next run reuses the saved transcript and only repeats the conversion.
 
 ### Accuracy notes
 
 - Whisper handles one language per request. If you force one language on audio that mixes several, the other languages will come out badly. Use `auto` for mixed audio, and set the real language (not a guess) when the audio is a single language.
 - Malayalam and Kannada are the least reliable, and mixed passages are weaker than single-language ones. Review those captions.
 - Translated captions go through two steps, so a transcription mistake carries into the translation.
+- `auto` captions follow the sound of each word, so non-English speech is not translated and the spelling can vary. The phoneme model can mishear noisy audio, and it is not as good as Whisper at telling real words from sounds.
 
 ## Output and skipping
 
-Every output is named `<file name>-<src>-<type>-<target>.srt`, where src is the audio language you picked (`auto`, `hi`, ...), the type is `translate` or `transcribe` and target is the caption language, for example `AUD-20200303-WA0034-auto-translate-hing.srt` and `AUD-20200303-WA0034-auto-transcribe-hi.srt`.
+Every output is named `<file name>-<src>-<type>-<target>.srt`, where src is the audio language you picked (`auto`, `hi`, ...), the type is `translate`, `transcribe` or `transliterate` and target is the caption language, for example `AUD-20200303-WA0034-auto-translate-hing.srt` and `AUD-20200303-WA0034-auto-transcribe-hi.srt`.
 
 - **Transcribe and translate:** both files are kept side by side in the same folder.
 - **Same language, or English audio with Hinglish captions:** one `transcribe` file named with the caption language.
+- **`auto` captions:** one `transliterate` file, for example `AUD-20200303-WA0034-auto-transliterate-auto.srt`.
 - **Non-English audio with English captions:** one `translation` file, made by Whisper in a single step.
 
 - **Local files:** the `.srt` is saved next to the source file.
@@ -178,7 +212,7 @@ Every output is named `<file name>-<src>-<type>-<target>.srt`, where src is the 
 
 A file is skipped when a caption for the same language already exists:
 
-| Source | Checked for `<name>-<src>-translate-<lang>.srt` or `<name>-<src>-transcribe-<lang>.srt` |
+| Source | Checked for `<name>-<src>-translate-<lang>.srt`, `<name>-<src>-transcribe-<lang>.srt` or `<name>-<src>-transliterate-<lang>.srt` |
 |---|---|
 | Local file or folder | The folder you gave and `output_captions/` |
 | Google Drive folder | The Drive folder and `output_captions/` |
@@ -201,10 +235,12 @@ Set in `.env`:
 |---|---|---|
 | `GROQ_API_KEY` | none | Your Groq key (required) |
 | `GROQ_MODEL` | `whisper-large-v3` | Speech model. `whisper-large-v3-turbo` is faster but slightly less accurate |
-| `GROQ_LLM_MODEL` | `openai/gpt-oss-120b` | Text model used for translation and Hinglish. If it is not available on your account the script falls back to `qwen/qwen3.6-27b` (a Groq preview model) and then `openai/gpt-oss-20b` |
+| `GROQ_LLM_MODEL` | `openai/gpt-oss-120b` | Text model used for translation, Hinglish and sound-based `auto` captions. If it is not available on your account the script falls back to `qwen/qwen3.6-27b` (a Groq preview model) and then `openai/gpt-oss-20b` |
 | `SOURCE_LANG` | `auto` | Default for the audio language prompt |
-| `TARGET_LANG` | `hing` | Default for the caption language prompt |
+| `TARGET_LANG` | `hing` | Default for the caption language prompt. Set `auto` for sound-to-sound captions |
 | `CUSTOM_PROMPT` | empty | Default hint about the audio, e.g. mixed languages or names |
+| `PHONEME_MODEL` | `facebook/wav2vec2-lv-60-espeak-cv-ft` | Hugging Face phoneme model used for `auto` captions |
+| `PHONEME_MODEL_PATH` | empty | Folder of a phoneme model you already have. When empty, `models/` and the Hugging Face cache are checked, then it is downloaded |
 | `FFMPEG_PATH` | empty | Full path to `ffmpeg`. When empty, `ffmpeg` is looked up on your `PATH` |
 | `FFPROBE_PATH` | empty | Full path to `ffprobe`. When empty, `ffprobe` is looked up on your `PATH` |
 
@@ -215,6 +251,8 @@ Set at the top of the script:
 | `AUDIO_CHUNK_SECONDS` | `600` | Length of each upload chunk |
 | `AUDIO_BITRATE_FOR_STT` | `64k` | Bitrate of the uploaded audio |
 | `LLM_BATCH_SIZE` | `25` | Caption lines converted per request |
+| `LITERAL_TEMPERATURE` | `0.2` | Whisper temperature for `auto` captions. Keep it at or below `0.6` |
+| `LITERAL_PROMPT` | casual filler-word string | Whisper prompt for `auto` captions that stops grammar correction |
 
 ## Troubleshooting
 
@@ -223,7 +261,10 @@ Set at the top of the script:
 - **Groq API error or rate limit:** the free tier has request limits. The error is printed and that file is skipped. Wait a bit and run again. Files that finished are skipped on the rerun.
 - **No speech detected:** no `.srt` is written for that file.
 - **Could not read video duration:** FFprobe could not read the file. Check that it plays.
-- **A file keeps being skipped:** a `<name>-<src>-translate-<lang>.srt` or `<name>-<src>-transcribe-<lang>.srt` for that language exists in the folder or in `output_captions/`. Delete it to redo the file.
+- **A file keeps being skipped:** a `<name>-<src>-translate-<lang>.srt`, `<name>-<src>-transcribe-<lang>.srt` or `<name>-<src>-transliterate-<lang>.srt` for that language exists in the folder or in `output_captions/`. Delete it to redo the file.
+- **The phoneme model libraries are missing:** run `pip install -r requirements-auto.txt`. Until then `auto` captions use the Whisper text only.
+- **The phoneme model download fails:** check your internet connection and free disk space (about 1.3 GB), then run again. Or download the model yourself and set `PHONEME_MODEL_PATH` to its folder.
+- **`auto` captions are slow:** the phoneme model runs on your machine. A GPU with CUDA PyTorch is much faster than the CPU.
 - **Model not found (404):** the model in `GROQ_LLM_MODEL` is not available on your Groq account. Groq retires models from time to time, see https://console.groq.com/docs/deprecations. Remove the `GROQ_LLM_MODEL` line from `.env` to use the default, or set it to a model your account can use.
 
 ## Project files
@@ -233,6 +274,7 @@ Set at the top of the script:
 | `auto_caption_generator.py` | The tool |
 | `.env.example` | Template for `.env` |
 | `requirements.txt` | Python dependencies |
+| `requirements-auto.txt` | Extra dependencies for `auto` sound-to-sound captions |
 | `.gitignore` | Keeps keys, tokens, recordings and generated files out of git |
 | `LICENSE` | MIT license |
 | `CONTRIBUTING.md` | How to report bugs, suggest features and send pull requests |
@@ -244,7 +286,7 @@ Set at the top of the script:
 
 ## Privacy and security
 
-- Your audio is sent to Groq for transcription, and transcripts are sent to a Groq text model when conversion is needed. Read Groq's terms and data policy before captioning private or sensitive recordings.
+- Your audio is sent to Groq for transcription, and transcripts (and, for `auto` captions, the phonemes read locally from your audio) are sent to a Groq text model when conversion is needed. The audio itself is only processed locally by the phoneme model, never uploaded for that step. Read Groq's terms and data policy before captioning private or sensitive recordings.
 - Google Drive access is read-only. Files are downloaded to `drive_downloads/` and deleted after each file is captioned.
 - `credentials.json` and `token.json` stay on your machine. Treat them like passwords and never commit or share them.
 - This project sends no analytics or telemetry. The only network calls go to Groq and, if you use Drive, Google.

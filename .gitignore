@@ -12,6 +12,8 @@ token.json
 output_captions/
 drive_downloads/
 caption_temp/
+models/
+.models/
 
 # Your own audio, video and captions (private recordings and transcripts)
 *.srt
