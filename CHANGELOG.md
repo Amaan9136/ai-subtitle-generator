@@ -10,6 +10,10 @@ All notable changes to this project are documented here. The format follows [Kee
 - Several keys per service: `GROQ_API_KEY_1`, `GROQ_API_KEY_2`, ... and `OLLAMA_API_KEY_1`, `OLLAMA_API_KEY_2`, ... When a key hits a rate limit the script switches to the next key, and waits only when every key is limited.
 - Rate limits: 429 replies wait for the `retry-after` time (up to 15 minutes) without using up the retries, and speech-to-text uploads retry up to 7 times.
 
+### Fixed
+
+- Ollama keys rejected with 401 or 403 are skipped in favor of the next key, and a single rejected key now shows a clear message. Quotes and spaces around Ollama keys in `.env` are ignored.
+
 ## [1.0.1] - 2026-10-07
 
 ### Added

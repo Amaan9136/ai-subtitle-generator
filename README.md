@@ -264,6 +264,7 @@ Set at the top of the script:
 - **FFmpeg/FFprobe were not found:** install FFmpeg and add it to your `PATH`, or set `FFMPEG_PATH` and `FFPROBE_PATH` in `.env` (see [FFmpeg setup](#ffmpeg-setup)).
 - **GROQ_API_KEY_1 is not set:** check that `.env` is next to the script and contains your key.
 - **OLLAMA_API_KEY_1 is not set:** add your Ollama cloud key to `.env`. It is only needed when the captions are not plain English.
+- **Ollama API key rejected (401):** the key in `.env` is invalid, expired or revoked. Create a new one at https://ollama.com/settings/keys and replace `OLLAMA_API_KEY_1`. Rejected keys are skipped when you have more than one.
 - **Groq API error or rate limit:** the free tier has request limits. The script waits out the `retry-after` time and retries before giving up on a file. Files that finished are skipped on the rerun.
 - **No speech detected:** no `.srt` is written for that file.
 - **Could not read video duration:** FFprobe could not read the file. Check that it plays.

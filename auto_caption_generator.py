@@ -45,7 +45,7 @@ TEMP_DIR = BASE_DIR / "caption_temp"          # scratch space for extracted audi
 GROQ_API_KEYS = list(dict.fromkeys(value for name, value in sorted(os.environ.items()) if name.startswith("GROQ_API_KEY") and value and not value.startswith("your_")))
 KEY_BLOCKED_UNTIL = {}
 GROQ_MODEL = os.getenv("GROQ_MODEL", "whisper-large-v3")     # or "whisper-large-v3-turbo" (faster, still free tier)
-OLLAMA_API_KEYS = list(dict.fromkeys(value for name, value in sorted(os.environ.items()) if name.startswith("OLLAMA_API_KEY") and value and not value.startswith("your_")))
+OLLAMA_API_KEYS = list(dict.fromkeys(value.strip().strip("\"'") for name, value in sorted(os.environ.items()) if name.startswith("OLLAMA_API_KEY") and value.strip().strip("\"'") and not value.strip().strip("\"'").startswith("your_")))
 OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "gpt-oss:20b")
 DEFAULT_SOURCE_LANG = os.getenv("SOURCE_LANG", "auto")
 DEFAULT_TARGET_LANG = os.getenv("TARGET_LANG", "hing")
@@ -469,6 +469,12 @@ def ollama_convert_batch(texts, target_lang):
         if response.status_code in (500, 502, 503, 504):
             time.sleep(5 * attempts)
             continue
+        if response.status_code in (401, 403):
+            if len(OLLAMA_API_KEYS) > 1:
+                OLLAMA_API_KEYS.remove(key)
+                attempts -= 1
+                continue
+            raise RuntimeError(f"Ollama API key rejected ({response.status_code}). Create a new key at https://ollama.com/settings/keys and set OLLAMA_API_KEY_1 in .env")
         if response.status_code != 200:
             raise RuntimeError(f"Ollama chat API error {response.status_code}: {response.text[:500]}")
         try:
