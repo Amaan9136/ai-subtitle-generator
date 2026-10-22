@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The text conversion step (translation, Hinglish and `auto` captions) now uses the Ollama cloud model `gpt-oss:20b` instead of a Groq text model. Groq is only used for speech-to-text. Set `OLLAMA_API_KEY` and optionally `OLLAMA_LLM_MODEL` in `.env`. `GROQ_LLM_MODEL` and the fallback models are removed.
+- Rate limits: 429 replies wait for the `retry-after` time (up to 15 minutes) without using up the retries, and speech-to-text uploads retry up to 7 times.
+
 ## [1.0.1] - 2026-10-07
 
 ### Added

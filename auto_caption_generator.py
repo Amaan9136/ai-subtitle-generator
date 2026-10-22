@@ -44,9 +44,8 @@ TEMP_DIR = BASE_DIR / "caption_temp"          # scratch space for extracted audi
 # ─────────────────────────────────────────────────────────────────────────────
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "whisper-large-v3")     # or "whisper-large-v3-turbo" (faster, still free tier)
-GROQ_LLM_MODEL = os.getenv("GROQ_LLM_MODEL", "openai/gpt-oss-120b")
-LLM_FALLBACK_MODELS = ["openai/gpt-oss-120b", "qwen/qwen3.6-27b", "openai/gpt-oss-20b"]
-RESOLVED_LLM_MODEL = None
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
+OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "gpt-oss:20b")
 DEFAULT_SOURCE_LANG = os.getenv("SOURCE_LANG", "auto")
 DEFAULT_TARGET_LANG = os.getenv("TARGET_LANG", "hing")
 CUSTOM_PROMPT = os.getenv("CUSTOM_PROMPT", "")
@@ -57,11 +56,12 @@ MODELS_DIR = BASE_DIR / ("models" if os.name == "nt" else ".models")
 PHONEME_DIR = MODELS_DIR / PHONEME_MODEL.split("/")[-1]
 PHONEME_STATE = None
 GROQ_API_BASE = "https://api.groq.com/openai/v1/audio"
-GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
+OLLAMA_CHAT_URL = "https://ollama.com/api/chat"
 GROQ_TIMEOUT_SECONDS = 300
 LLM_BATCH_SIZE = 10
 LLM_MAX_RETRIES = 3
+LLM_RATE_LIMIT_RETRIES = 10
+LLM_MAX_WAIT_SECONDS = 900
 LLM_TIMEOUT_SECONDS = 60
 LLM_MAX_COMPLETION_TOKENS = 8192
 # Groq's free tier caps uploads at 25MB per file. We keep chunks tiny and safe
@@ -385,7 +385,7 @@ def transcribe_video(video_path, duration, source_lang, target_lang):
         result = {}
         try:
             if chunk_path.exists() and chunk_path.stat().st_size >= 2048:
-                for attempt in range(4):
+                for attempt in range(8):
                     try:
                         result = groq_transcribe_chunk(chunk_path, progress_label=chunk_label, language=None if source_lang == "auto" else source_lang, translate=target_lang == "en" and source_lang != "en", literal=target_lang == "auto")
                         break
@@ -393,10 +393,10 @@ def transcribe_video(video_path, duration, source_lang, target_lang):
                         if "invalid_media_file" in str(error):
                             print(f"  {chunk_label} skipped, Groq could not read this audio chunk.")
                             break
-                        if attempt == 3 or not (isinstance(error, requests.RequestException) or any(f"error {code}:" in str(error) for code in (429, 500, 502, 503, 504))):
+                        if attempt == 7 or not (isinstance(error, requests.RequestException) or any(f"error {code}:" in str(error) for code in (429, 500, 502, 503, 504))):
                             raise RuntimeError(str(error)) from error
-                        wait = min(120, float(m.group(1)) if (m := re.search(r"retry-after=([\d.]+)", str(error))) else 20 * (attempt + 1))
-                        print(f"\n  {chunk_label} {str(error)[:100]} - retrying in {wait:.0f}s ({attempt + 1}/3)")
+                        wait = min(LLM_MAX_WAIT_SECONDS, float(m.group(1)) if (m := re.search(r"retry-after=([\d.]+)", str(error))) else 20 * (attempt + 1))
+                        print(f"\n  {chunk_label} {str(error)[:100]} - retrying in {wait:.0f}s ({attempt + 1}/7)")
                         time.sleep(wait)
             else:
                 print(f"  {chunk_label} no audio in this range, skipped.")
@@ -423,20 +423,7 @@ def transcribe_video(video_path, duration, source_lang, target_lang):
     return segments, detected
 def needs_conversion(source_lang, target_lang):
     return target_lang == "auto" or target_lang != "en" and target_lang != source_lang and not (source_lang == "en" and target_lang == "hing")
-def resolve_llm_model():
-    global RESOLVED_LLM_MODEL
-    if RESOLVED_LLM_MODEL:
-        return RESOLVED_LLM_MODEL
-    try:
-        response = requests.get(GROQ_MODELS_URL, headers={"Authorization": f"Bearer {GROQ_API_KEY}"}, timeout=GROQ_TIMEOUT_SECONDS)
-        available = {model["id"] for model in response.json()["data"]} if response.status_code == 200 else set()
-    except (requests.RequestException, ValueError, KeyError, TypeError):
-        available = set()
-    RESOLVED_LLM_MODEL = next((model for model in [GROQ_LLM_MODEL, *LLM_FALLBACK_MODELS] if model in available), GROQ_LLM_MODEL)
-    if RESOLVED_LLM_MODEL != GROQ_LLM_MODEL:
-        print(f"\n  Text model {GROQ_LLM_MODEL} is not available on your Groq account, using {RESOLVED_LLM_MODEL} instead.")
-    return RESOLVED_LLM_MODEL
-def groq_convert_batch(texts, target_lang):
+def ollama_convert_batch(texts, target_lang):
     instruction = (
         "Do NOT translate and do NOT fix grammar. A line may look like 'IPA: <phonemes actually heard> | HEARD: <rough speech-to-text guess>'. Treat the IPA as the truth for the sounds and use HEARD only to find word boundaries. If a line has no IPA part, transliterate the text itself. Write every word, in order, in plain English (Roman) letters exactly as it sounds, whatever language it is spoken in, keeping every filler and repetition. Never output IPA symbols, the IPA/HEARD labels or any non-Latin script."
         if target_lang == "auto" else "Translate the meaning into Hinglish: natural spoken Hindi/Urdu written in Roman (English) letters the way people text it, keeping English words as they are. Never use Devanagari, Arabic, Kannada or Malayalam script."
@@ -446,34 +433,42 @@ def groq_convert_batch(texts, target_lang):
         {"role": "system", "content": f"You convert subtitle lines transcribed from speech that may mix English, Hindi, Urdu, Kannada and Malayalam. {instruction} Keep names and numbers, keep each line short and in the same order. {' Context about the audio: ' + CUSTOM_PROMPT + '.' if CUSTOM_PROMPT else ''} Reply with JSON only, in the form {{\"lines\": [...]}}, containing exactly {len(texts)} strings, one per input line."},
         {"role": "user", "content": json.dumps(texts, ensure_ascii=False)},
     ]
-    for _ in range(LLM_MAX_RETRIES):
+    attempts = limited = 0
+    while attempts < LLM_MAX_RETRIES:
+        attempts += 1
         try:
             response = requests.post(
-                GROQ_CHAT_URL,
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-                json={"model": resolve_llm_model(), "messages": messages, "temperature": 0.2, "response_format": {"type": "json_object"}, "max_completion_tokens": LLM_MAX_COMPLETION_TOKENS, **({"reasoning_effort": "low"} if resolve_llm_model().startswith("openai/gpt-oss") else {})},
+                OLLAMA_CHAT_URL,
+                headers={"Authorization": f"Bearer {OLLAMA_API_KEY}"},
+                json={"model": OLLAMA_LLM_MODEL, "messages": messages, "stream": False, "think": "low", "format": "json", "options": {"temperature": 0.2, "num_predict": LLM_MAX_COMPLETION_TOKENS}},
                 timeout=LLM_TIMEOUT_SECONDS,
             )
         except requests.Timeout:
-            print(f"\n  Groq text model timed out after {LLM_TIMEOUT_SECONDS}s, retrying...")
+            print(f"\n  Ollama text model timed out after {LLM_TIMEOUT_SECONDS}s, retrying...")
             continue
         if response.status_code == 429:
-            print("\n  Groq rate limit hit, waiting before retrying...")
-            time.sleep(min(float(response.headers.get("retry-after", 10)), 30))
+            limited += 1
+            if limited > LLM_RATE_LIMIT_RETRIES:
+                raise RuntimeError(f"Ollama rate limit persisted: {response.text[:300]}")
+            attempts -= 1
+            wait = min(float(response.headers.get("retry-after", 10 * limited)) + 1, LLM_MAX_WAIT_SECONDS)
+            print(f"\n  Ollama rate limit hit, waiting {wait:.0f}s before retrying ({limited}/{LLM_RATE_LIMIT_RETRIES})...")
+            time.sleep(wait)
             continue
-        if response.status_code == 400 and "json_validate_failed" in response.text:
+        if response.status_code in (500, 502, 503, 504):
+            time.sleep(5 * attempts)
             continue
         if response.status_code != 200:
-            raise RuntimeError(f"Groq chat API error {response.status_code}: {response.text[:500]}")
+            raise RuntimeError(f"Ollama chat API error {response.status_code}: {response.text[:500]}")
         try:
-            lines = json.loads(response.json()["choices"][0]["message"]["content"])["lines"]
+            lines = json.loads(response.json()["message"]["content"])["lines"]
         except (ValueError, KeyError, IndexError, TypeError):
             continue
         if isinstance(lines, list) and len(lines) == len(texts) and all(isinstance(line, str) for line in lines):
             return [line.strip() or original for line, original in zip(lines, texts)]
     if len(texts) > 1:
-        return groq_convert_batch(texts[:len(texts) // 2], target_lang) + groq_convert_batch(texts[len(texts) // 2:], target_lang)
-    raise RuntimeError("Groq did not return usable converted lines.")
+        return ollama_convert_batch(texts[:len(texts) // 2], target_lang) + ollama_convert_batch(texts[len(texts) // 2:], target_lang)
+    raise RuntimeError("Ollama did not return usable converted lines.")
 def find_phoneme_model(snapshot_download):
     candidates = [os.getenv("PHONEME_MODEL_PATH"), PHONEME_DIR]
     try:
@@ -547,7 +542,7 @@ def convert_segments(segments, target_lang, hints=None):
         batch = segments[batch_start:batch_start + LLM_BATCH_SIZE]
         print_progress_bar(batch_start / len(segments) * 100, prefix=label, suffix=f"| {batch_start}/{len(segments)} lines")
         try:
-            texts = groq_convert_batch([f"IPA: {hints[batch_start + i]} | HEARD: {text}" if hints and hints[batch_start + i] else text for i, (_, _, text) in enumerate(batch)], target_lang)
+            texts = ollama_convert_batch([f"IPA: {hints[batch_start + i]} | HEARD: {text}" if hints and hints[batch_start + i] else text for i, (_, _, text) in enumerate(batch)], target_lang)
         except (RuntimeError, requests.RequestException) as error:
             print(f"\n  Conversion failed for lines {batch_start + 1}-{batch_start + len(batch)}: {error}")
             failed += 1
@@ -614,7 +609,7 @@ def process_video(video_path, downloaded_from_drive=False, source_lang=DEFAULT_S
         if segments and converting:
             segments, failed = convert_segments(segments, target_lang, recognise_phonemes(video_path, segments) if target_lang == "auto" else None)
     except RuntimeError as error:
-        print(f"\nGroq API request failed: {error}")
+        print(f"\nAPI request failed: {error}")
         cleanup_after_video(video_path, downloaded_from_drive)
         return
     if not segments:
@@ -657,7 +652,7 @@ def main():
     print("=" * 80)
     print(f"FFmpeg          : {FFMPEG}")
     print(f"FFprobe         : {FFPROBE}")
-    print(f"Groq model      : {GROQ_MODEL} | text model: {GROQ_LLM_MODEL}")
+    print(f"Groq model      : {GROQ_MODEL} | text model: {OLLAMA_LLM_MODEL} (Ollama cloud)")
     print(f"Output folder   : {OUTPUT_DIR.resolve()}")
     if not HAS_UPLOAD_PROGRESS:
         print("Tip            : pip install requests-toolbelt for a live upload progress bar")
@@ -671,6 +666,11 @@ def main():
     print("Audio language can also be 'auto' to let Whisper detect it.")
     source_lang = ask_language("\nAudio language (what is spoken)", DEFAULT_SOURCE_LANG, SOURCE_OPTIONS)
     target_lang = ask_language("Caption language (what the .srt should contain)", DEFAULT_TARGET_LANG, TARGET_OPTIONS)
+    if needs_conversion(source_lang, target_lang) and not OLLAMA_API_KEY:
+        print("\nOLLAMA_API_KEY is not set. Add it to your .env file for the text conversion step:")
+        print("OLLAMA_API_KEY=your_key_here")
+        print("Get a key at https://ollama.com/settings/keys")
+        sys.exit(1)
     CUSTOM_PROMPT = input("Custom prompt about the audio, e.g. mixed languages/names (Enter = none): ").strip() or CUSTOM_PROMPT
     print("\nAccepted input: a local audio/video file, a local folder of audio/video files,")
     print("a Google Drive file link/ID, or a Google Drive folder link/ID.")

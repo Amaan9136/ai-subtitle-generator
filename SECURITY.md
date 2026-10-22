@@ -21,7 +21,7 @@ You can expect an acknowledgement within a few days. This is a volunteer project
 Examples of problems worth reporting:
 
 - Writing or deleting files outside the intended folders, for example through crafted file names
-- Leaking the Groq API key, `credentials.json` or `token.json`
+- Leaking the Groq or Ollama API key, `credentials.json` or `token.json`
 - Running unintended commands through file names, links or API responses
 - Requesting more Google Drive access than needed
 
@@ -30,12 +30,13 @@ Examples of problems worth reporting:
 Deleting the file or commit is not enough, because the secret stays in git history. Revoke it right away:
 
 - **Groq API key:** delete it at https://console.groq.com/keys and create a new one
+- **Ollama API key:** delete it at https://ollama.com/settings/keys and create a new one
 - **Google OAuth client:** delete or rotate it in the Google Cloud Console, and remove the app's access at https://myaccount.google.com/permissions
 
 Then remove the secret from the repository history before pushing again.
 
 ## Notes for users
 
-- Audio and transcripts are sent to Groq. Do not process recordings you are not allowed to share with a third party.
+- Audio is sent to Groq and transcripts are sent to Groq and Ollama. Do not process recordings you are not allowed to share with a third party.
 - The tool asks for read-only Google Drive access.
 - Keep `.env`, `credentials.json` and `token.json` private.

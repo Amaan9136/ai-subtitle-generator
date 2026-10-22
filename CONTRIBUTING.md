@@ -37,7 +37,7 @@ pip install -r requirements.txt
 
 On Windows PowerShell activate with `.venv\Scripts\Activate.ps1`.
 
-3. Copy `.env.example` to `.env` and add your own Groq key. If FFmpeg is not on your `PATH`, set `FFMPEG_PATH` and `FFPROBE_PATH` there.
+3. Copy `.env.example` to `.env` and add your own Groq and Ollama keys. If FFmpeg is not on your `PATH`, set `FFMPEG_PATH` and `FFPROBE_PATH` there.
 4. Create a branch for your change:
 
 ```bash
