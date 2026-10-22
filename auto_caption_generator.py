@@ -40,11 +40,12 @@ TEMP_DIR = BASE_DIR / "caption_temp"          # scratch space for extracted audi
 # ─────────────────────────────────────────────────────────────────────────────
 # Speech-to-text configuration - Groq's hosted Whisper API (free tier, no local
 # model download, no local storage used for weights). Get a free key at:
-# https://console.groq.com/keys  and put it in your .env file as GROQ_API_KEY.
+# https://console.groq.com/keys  and put it in your .env file as GROQ_API_KEY_1 (add GROQ_API_KEY_2 and more to rotate on rate limits).
 # ─────────────────────────────────────────────────────────────────────────────
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_API_KEYS = list(dict.fromkeys(value for name, value in sorted(os.environ.items()) if name.startswith("GROQ_API_KEY") and value and not value.startswith("your_")))
+KEY_BLOCKED_UNTIL = {}
 GROQ_MODEL = os.getenv("GROQ_MODEL", "whisper-large-v3")     # or "whisper-large-v3-turbo" (faster, still free tier)
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "")
+OLLAMA_API_KEYS = list(dict.fromkeys(value for name, value in sorted(os.environ.items()) if name.startswith("OLLAMA_API_KEY") and value and not value.startswith("your_")))
 OLLAMA_LLM_MODEL = os.getenv("OLLAMA_LLM_MODEL", "gpt-oss:20b")
 DEFAULT_SOURCE_LANG = os.getenv("SOURCE_LANG", "auto")
 DEFAULT_TARGET_LANG = os.getenv("TARGET_LANG", "hing")
@@ -318,11 +319,20 @@ def extract_audio_chunk(video_path, start_seconds, chunk_duration, out_path, pro
     print()
     if process.returncode != 0:
         raise RuntimeError(f"FFmpeg failed to extract audio: {stderr_output.strip()[:500]}")
+def pick_key(keys):
+    key = min(keys, key=lambda k: KEY_BLOCKED_UNTIL.get(k, 0))
+    time.sleep(max(0, KEY_BLOCKED_UNTIL.get(key, 0) - time.time()))
+    return key
+def block_key(keys, key, response, service):
+    KEY_BLOCKED_UNTIL[key] = time.time() + min(float(response.headers.get("retry-after", 20)) + 1, LLM_MAX_WAIT_SECONDS)
+    free = min(KEY_BLOCKED_UNTIL.get(k, 0) for k in keys) - time.time()
+    print(f"\n  {service} rate limit hit on key {keys.index(key) + 1}/{len(keys)}, " + ("switching to the next key..." if free <= 0 else f"all keys are limited, waiting {free:.0f}s..."))
 def groq_transcribe_chunk(audio_path, progress_label="", language=None, translate=False, literal=False):
-    if not GROQ_API_KEY:
-        print("\nGROQ_API_KEY is not set.")
+    if not GROQ_API_KEYS:
+        print("\nGROQ_API_KEY_1 is not set.")
         print("Get a free key at https://console.groq.com/keys and put it in your .env file.")
         sys.exit(1)
+    key = pick_key(GROQ_API_KEYS)
     endpoint = f"{GROQ_API_BASE}/{'translations' if translate else 'transcriptions'}"
     fields = {
         "model": GROQ_MODEL,
@@ -350,7 +360,7 @@ def groq_transcribe_chunk(audio_path, progress_label="", language=None, translat
             monitor = MultipartEncoderMonitor(encoder, _on_progress)
             response = requests.post(
                 endpoint,
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": monitor.content_type},
+                headers={"Authorization": f"Bearer {key}", "Content-Type": monitor.content_type},
                 data=monitor,
                 timeout=GROQ_TIMEOUT_SECONDS,
             )
@@ -361,13 +371,15 @@ def groq_transcribe_chunk(audio_path, progress_label="", language=None, translat
             print(f"  {progress_label} uploading to Groq ({format_size(size)})... ", end="", flush=True)
             response = requests.post(
                 endpoint,
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                headers={"Authorization": f"Bearer {key}"},
                 files={"file": (audio_path.name, audio_file, "audio/mpeg")},
                 data=fields,
                 timeout=GROQ_TIMEOUT_SECONDS,
             )
             print("done.")
     if response.status_code != 200:
+        if response.status_code == 429:
+            block_key(GROQ_API_KEYS, key, response, "Groq")
         raise RuntimeError(f"Groq API error {response.status_code}: {response.text[:500]} retry-after={response.headers.get('retry-after', '')}")
     return response.json()
 def transcribe_video(video_path, duration, source_lang, target_lang):
@@ -395,8 +407,8 @@ def transcribe_video(video_path, duration, source_lang, target_lang):
                             break
                         if attempt == 7 or not (isinstance(error, requests.RequestException) or any(f"error {code}:" in str(error) for code in (429, 500, 502, 503, 504))):
                             raise RuntimeError(str(error)) from error
-                        wait = min(LLM_MAX_WAIT_SECONDS, float(m.group(1)) if (m := re.search(r"retry-after=([\d.]+)", str(error))) else 20 * (attempt + 1))
-                        print(f"\n  {chunk_label} {str(error)[:100]} - retrying in {wait:.0f}s ({attempt + 1}/7)")
+                        wait = 0 if "error 429:" in str(error) else min(LLM_MAX_WAIT_SECONDS, float(m.group(1)) if (m := re.search(r"retry-after=([\d.]+)", str(error))) else 20 * (attempt + 1))
+                        print(f"\n  {chunk_label} {str(error)[:100]} - retrying ({attempt + 1}/7)")
                         time.sleep(wait)
             else:
                 print(f"  {chunk_label} no audio in this range, skipped.")
@@ -436,10 +448,11 @@ def ollama_convert_batch(texts, target_lang):
     attempts = limited = 0
     while attempts < LLM_MAX_RETRIES:
         attempts += 1
+        key = pick_key(OLLAMA_API_KEYS)
         try:
             response = requests.post(
                 OLLAMA_CHAT_URL,
-                headers={"Authorization": f"Bearer {OLLAMA_API_KEY}"},
+                headers={"Authorization": f"Bearer {key}"},
                 json={"model": OLLAMA_LLM_MODEL, "messages": messages, "stream": False, "think": "low", "format": "json", "options": {"temperature": 0.2, "num_predict": LLM_MAX_COMPLETION_TOKENS}},
                 timeout=LLM_TIMEOUT_SECONDS,
             )
@@ -451,9 +464,7 @@ def ollama_convert_batch(texts, target_lang):
             if limited > LLM_RATE_LIMIT_RETRIES:
                 raise RuntimeError(f"Ollama rate limit persisted: {response.text[:300]}")
             attempts -= 1
-            wait = min(float(response.headers.get("retry-after", 10 * limited)) + 1, LLM_MAX_WAIT_SECONDS)
-            print(f"\n  Ollama rate limit hit, waiting {wait:.0f}s before retrying ({limited}/{LLM_RATE_LIMIT_RETRIES})...")
-            time.sleep(wait)
+            block_key(OLLAMA_API_KEYS, key, response, "Ollama")
             continue
         if response.status_code in (500, 502, 503, 504):
             time.sleep(5 * attempts)
@@ -657,18 +668,18 @@ def main():
     if not HAS_UPLOAD_PROGRESS:
         print("Tip            : pip install requests-toolbelt for a live upload progress bar")
         print("                 (uploads still work fine without it).")
-    if not GROQ_API_KEY:
-        print("\nGROQ_API_KEY is not set. Add it to a .env file next to this script:")
-        print("GROQ_API_KEY=your_key_here")
+    if not GROQ_API_KEYS:
+        print("\nGROQ_API_KEY_1 is not set. Add it to a .env file next to this script:")
+        print("GROQ_API_KEY_1=your_key_here")
         print("Get a free key at https://console.groq.com/keys")
         sys.exit(1)
     print("\nLanguage codes: en English | hi Hindi | ur Urdu | kn Kannada (ka works too) | ml Malayalam (ma works too) | hing Hinglish | auto sound-based English letters (caption language only)")
     print("Audio language can also be 'auto' to let Whisper detect it.")
     source_lang = ask_language("\nAudio language (what is spoken)", DEFAULT_SOURCE_LANG, SOURCE_OPTIONS)
     target_lang = ask_language("Caption language (what the .srt should contain)", DEFAULT_TARGET_LANG, TARGET_OPTIONS)
-    if needs_conversion(source_lang, target_lang) and not OLLAMA_API_KEY:
-        print("\nOLLAMA_API_KEY is not set. Add it to your .env file for the text conversion step:")
-        print("OLLAMA_API_KEY=your_key_here")
+    if needs_conversion(source_lang, target_lang) and not OLLAMA_API_KEYS:
+        print("\nOLLAMA_API_KEY_1 is not set. Add it to your .env file for the text conversion step:")
+        print("OLLAMA_API_KEY_1=your_key_here")
         print("Get a key at https://ollama.com/settings/keys")
         sys.exit(1)
     CUSTOM_PROMPT = input("Custom prompt about the audio, e.g. mixed languages/names (Enter = none): ").strip() or CUSTOM_PROMPT

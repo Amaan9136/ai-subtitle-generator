@@ -60,9 +60,11 @@ pip install -r requirements-auto.txt
 4. Copy `.env.example` to `.env` and add your key:
 
 ```env
-GROQ_API_KEY=your_groq_api_key_here
+GROQ_API_KEY_1=your_groq_api_key_here
+GROQ_API_KEY_2=your_groq_api_key_here
 GROQ_MODEL=whisper-large-v3
-OLLAMA_API_KEY=your_ollama_api_key_here
+OLLAMA_API_KEY_1=your_ollama_api_key_here
+OLLAMA_API_KEY_2=your_ollama_api_key_here
 OLLAMA_LLM_MODEL=gpt-oss:20b
 FFMPEG_PATH=
 FFPROBE_PATH=
@@ -235,9 +237,9 @@ Set in `.env`:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `GROQ_API_KEY` | none | Your Groq key (required) |
+| `GROQ_API_KEY_1`, `GROQ_API_KEY_2`, ... | none | Your Groq keys (at least one is required). When a key hits a rate limit the script switches to the next one and waits only when all are limited |
 | `GROQ_MODEL` | `whisper-large-v3` | Speech model. `whisper-large-v3-turbo` is faster but slightly less accurate |
-| `OLLAMA_API_KEY` | none | Your Ollama cloud key (required for captions that need the text model) |
+| `OLLAMA_API_KEY_1`, `OLLAMA_API_KEY_2`, ... | none | Your Ollama cloud keys (at least one is required for captions that need the text model), rotated the same way |
 | `OLLAMA_LLM_MODEL` | `gpt-oss:20b` | Ollama cloud text model used for translation, Hinglish and sound-based `auto` captions |
 | `SOURCE_LANG` | `auto` | Default for the audio language prompt |
 | `TARGET_LANG` | `hing` | Default for the caption language prompt. Set `auto` for sound-to-sound captions |
@@ -260,8 +262,8 @@ Set at the top of the script:
 ## Troubleshooting
 
 - **FFmpeg/FFprobe were not found:** install FFmpeg and add it to your `PATH`, or set `FFMPEG_PATH` and `FFPROBE_PATH` in `.env` (see [FFmpeg setup](#ffmpeg-setup)).
-- **GROQ_API_KEY is not set:** check that `.env` is next to the script and contains your key.
-- **OLLAMA_API_KEY is not set:** add your Ollama cloud key to `.env`. It is only needed when the captions are not plain English.
+- **GROQ_API_KEY_1 is not set:** check that `.env` is next to the script and contains your key.
+- **OLLAMA_API_KEY_1 is not set:** add your Ollama cloud key to `.env`. It is only needed when the captions are not plain English.
 - **Groq API error or rate limit:** the free tier has request limits. The script waits out the `retry-after` time and retries before giving up on a file. Files that finished are skipped on the rerun.
 - **No speech detected:** no `.srt` is written for that file.
 - **Could not read video duration:** FFprobe could not read the file. Check that it plays.
